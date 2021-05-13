@@ -1,0 +1,114 @@
+# Welcome to Serverless!
+#
+# This file is the main config file for your service.
+# It's very minimal at this point and uses default values.
+# You can always add more config options for more control.
+# We've included some commented out config examples here.
+# Just uncomment any of them to get that config option.
+#
+# For full config options, check the docs:
+#    docs.serverless.com
+#
+# Happy Coding!
+
+service: step-fn-example
+# app and org for use with dashboard.serverless.com
+app: step-fn-example-app
+org: marcostrotti
+
+# You can pin your service to only deploy with a specific Serverless version
+# Check out our docs for more details
+frameworkVersion: '2'
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  lambdaHashingVersion: 20201221
+
+plugins:
+  - serverless-step-functions
+  - serverless-iam-roles-per-function
+
+package:
+  individually: true
+#  exclude:
+#    - ./**
+
+functions:
+  job:
+    handler: lambda/job.handler
+    package:
+      include:
+        - job.js
+  orchestrator:
+    handler: lambda/orchestrator.handler
+    package:
+      include:
+        - orchestrator.js
+  worker:
+    handler: lambda/worker.handler
+    iamRoleStatements:
+      - Effect: "Allow"
+        Action:
+          - states:SendTaskSuccess
+          - states:SendTaskFailure
+        Resource: "*"
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt: [ MicroServiceQueue, Arn ]
+
+stepFunctions:
+  stateMachines:
+    myStateMachine:
+      name: "state-machine"
+      type: EXPRESS
+      events:
+        - http:
+            path: hello
+            method: GET
+      definition:
+        Comment: "A state machine I created for this article"
+        StartAt: "orchestrator"
+        States:
+          isDone:
+            Type: Choice
+            Choices:
+              - Variable: $.length
+                NumericGreaterThan: 0
+                Next: sendtoSQS
+            Default: Done
+          orchestrator:
+            Comment: "Lambda guard lambda function"
+            Type: Task
+            Resource: { "Fn::GetAtt": [ 
+              "OrchestratorLambdaFunction", "Arn" 
+            ]}
+            Next: sendtoSQS
+          sendtoSQS: 
+            Type: Task
+            Resource: "arn:aws:states:::sqs:sendMessage.waitForTaskToken"
+            Parameters: 
+              QueueUrl: 
+                Ref: MicroServiceQueue
+              MessageBody:
+                input.$: "$"
+                taskToken.$: "$$.Task.Token"
+            Next: job  
+          job:
+            Comment: "Lambda guard lambda function"
+            Type: Task
+            Resource: { "Fn::GetAtt": [ 
+              "JobLambdaFunction", "Arn" 
+            ]}
+            Next: isDone
+          Done:
+            Type: Pass
+            End: true
+
+resources:
+  Resources:
+    MicroServiceQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: "MicroServiceQueue"
